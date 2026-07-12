@@ -2,6 +2,7 @@
   "name": "barflow-api",
   "version": "0.1.0",
   "description": "BarFlow API — gestão de bares/restaurantes (multi-tenant, RBAC, segurança OWASP)",
+  "license": "MIT",
   "scripts": {
     "build": "nest build",
     "start": "node dist/main",
