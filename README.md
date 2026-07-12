@@ -86,6 +86,19 @@ Endpoints principais:
 
 ---
 
+## Deploy com Docker (recomendado)
+
+Sobe API + site + banco num comando:
+
+```bash
+docker compose up -d --build
+```
+
+Acesse o site em http://localhost:3000 (login demo: `dono@barflow.dev` / `SenhaForte@123`).
+Veja `DEPLOY.md` (implantação/segurança) e `GUIA_CLIENTE.md` (uso do dia a dia).
+
+---
+
 ## Como funciona
 
 - **Multi-tenant**: cada `Tenant` isola seus dados; toda query filtra por `tenantId`
