@@ -1,19 +1,21 @@
-FROM node:20-alpine AS base
+FROM node:20-slim AS base
 WORKDIR /app
-RUN apk add --no-cache python3 make g++ build-base
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci
 COPY . .
 RUN npx prisma generate
 RUN npm run build
 
-FROM node:20-alpine AS runtime
+FROM node:20-slim AS runtime
 WORKDIR /app
-RUN apk add --no-cache python3 make g++ build-base
+ENV NODE_ENV=production
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ build-essential ca-certificates && rm -rf /var/lib/apt/lists/*
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=base /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=base /app/dist ./dist
 COPY prisma ./prisma
 EXPOSE 3001
-CMD ["node", "dist/main.js"]
+# Aplica migrations, popula dados demo (idempotente) e sobe a API.
+CMD ["sh", "-c", "npx prisma migrate deploy && npx tsx prisma/seed.ts && node dist/main.js"]

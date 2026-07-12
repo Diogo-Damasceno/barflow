@@ -1,0 +1,7 @@
+# Porta de produção para o site (usado por padrão junto com docker-compose.yml).
+# O docker-compose.yml base não publica a porta do web; este arquivo a expõe em 3000.
+# Uso: docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+services:
+  web:
+    ports:
+      - "3000:3000"

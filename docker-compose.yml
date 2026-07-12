@@ -34,7 +34,23 @@ services:
       HTTPS: ${HTTPS:-false}
     ports:
       - "3001:3001"
-    command: ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+    healthcheck:
+      # Node 20 tem fetch global; checa o /docs sem depender de wget/curl.
+      test: ["CMD-SHELL", "node -e \"fetch('http://localhost:3001/docs').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  web:
+    build: ./web
+    container_name: barflow-web
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # o front chama a API pelo nome do serviço dentro da rede do compose
+      NEXT_PUBLIC_API_URL: http://api:3001
+    # porta publicada no docker-compose.prod.yml (3000) ou override de teste (3005)
 
 volumes:
   barflow_pg:
