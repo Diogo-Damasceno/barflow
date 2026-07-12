@@ -1,0 +1,329 @@
+// BarFlow — Modelo de Dados (Prisma + PostgreSQL)
+// Multi-tenant (tenantId = empresa) + Multi-filial (branchId) desde o dia 1.
+// Toda entidade de negócio carrega tenantId; branchId onde a operação é local.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Tenant / Filiais / RBAC
+// ---------------------------------------------------------------------------
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now())
+  branches  Branch[]
+  users     User[]
+  products  Product[]
+  recipes   Recipe[]
+  sales     Sale[]
+  suppliers Supplier[]
+  categories Category[]
+  stockMovements StockMovement[]
+  roles     Role[]
+}
+
+model Branch {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  address   String?
+  createdAt DateTime @default(now())
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users     User[]
+  sales     Sale[]
+  movements StockMovement[]
+
+  @@index([tenantId])
+}
+
+// Papel (Role) contém permissões. Dono/Funcionário são seeds; novos papéis criáveis.
+model Role {
+  id          String      @id @default(cuid())
+  tenantId    String
+  name        String // OWNER, EMPLOYEE, ou custom
+  description String?
+  permissions Permission[] @relation("RolePermissions")
+  users       User[]
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model Permission {
+  id    String @id @default(cuid())
+  name  String @unique // ex.: product:create, sale:cancel, report:export
+  label String
+  roles Role[] @relation("RolePermissions")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  tenantId     String
+  branchId     String?
+  roleId       String
+  email        String
+  name         String
+  passwordHash String // Argon2id
+  active       Boolean   @default(true)
+  // controle de força bruta / lockout
+  failedLogins Int       @default(0)
+  lockedUntil  DateTime?
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  // refresh tokens (rotação + revogação)
+  refreshTokens RefreshToken[]
+  role         Role      @relation(fields: [roleId], references: [id])
+  tenant       Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch       Branch?   @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@unique([tenantId, email])
+  @@index([tenantId])
+  @@index([roleId])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  userId    String
+  tokenHash String   @unique // hash do refresh (nunca guardamos o plaintext)
+  revokedAt DateTime?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// Catálogo: Fornecedores, Categorias, Produtos
+// ---------------------------------------------------------------------------
+
+model Supplier {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  contact   String?
+  createdAt DateTime @default(now())
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products  Product[]
+
+  @@index([tenantId])
+}
+
+model Category {
+  id        String   @id @default(cuid())
+  tenantId  String
+  name      String
+  createdAt DateTime @default(now())
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  products  Product[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+model Product {
+  id            String    @id @default(cuid())
+  tenantId      String
+  categoryId    String?
+  supplierId    String?
+  code          String // código interno
+  barcode       String? // EAN
+  name          String
+  description   String?
+  unit          Unit      @default(UN) // UN, ML, L, G, KG
+  quantity      Float     @default(0) // em estoque (na unidade base)
+  minStock      Float     @default(0)
+  costPrice     Float // preço de compra (base do cálculo de custo)
+  salePrice     Float
+  expiresAt     DateTime? // validade
+  notes         String?
+  imageUrl      String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  tenant        Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  category      Category? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  supplier      Supplier? @relation(fields: [supplierId], references: [id], onDelete: SetNull)
+  recipeItems   RecipeItem[]
+  movements     StockMovement[]
+  saleItems     SaleItem[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@index([tenantId, barcode])
+  @@index([tenantId, categoryId])
+}
+
+// ---------------------------------------------------------------------------
+// Receitas (motor de custo em cascata)
+// ---------------------------------------------------------------------------
+
+model Recipe {
+  id          String   @id @default(cuid())
+  tenantId    String
+  name        String
+  description String?
+  // rendimento: quantas porções a receita rende (ex.: 1 copo)
+  yield       Float    @default(1)
+  yieldUnit   Unit      @default(UN)
+  // desperdício em %, aplicado sobre o custo dos insumos
+  wastePct    Float    @default(0)
+  salePrice   Float // preço de venda da porção
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  tenant      Tenant     @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  items       RecipeItem[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId])
+}
+
+// Cada ingrediente de uma receita referencia um PRODUTO (de onde vem o custPrice).
+// amount é expresso na unidade do produto; percent (%) normaliza sobre o rendimento.
+model RecipeItem {
+  id         String   @id @default(cuid())
+  recipeId   String
+  productId  String
+  // quantidade do insumo (na unidade do produto) OU % se unit == PCT
+  amount     Float
+  unit       Unit // UN, ML, L, G, KG, PCT
+  recipe     Recipe   @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([recipeId])
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// Estoque (movimentações)
+// ---------------------------------------------------------------------------
+
+model StockMovement {
+  id          String      @id @default(cuid())
+  tenantId    String
+  branchId    String?
+  productId   String
+  type        MovementType // IN, OUT, ADJUST, TRANSFER
+  quantity    Float // positivo; OUT negativo no saldo
+  reason      String?
+  userId      String?
+  saleId      String?
+  createdAt   DateTime    @default(now())
+  product     Product      @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch      Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
+
+  @@index([tenantId])
+  @@index([tenantId, productId])
+  @@index([tenantId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Vendas
+// ---------------------------------------------------------------------------
+
+model Sale {
+  id             String       @id @default(cuid())
+  tenantId       String
+  branchId       String?
+  userId         String // funcionário que vendeu
+  customerName   String?
+  paymentMethod  PaymentMethod
+  discount       Float        @default(0)
+  addition       Float        @default(0)
+  amountReceived Float        @default(0)
+  change         Float        @default(0)
+  total          Float // valor final
+  costTotal      Float        @default(0) // custo dos itens
+  profit         Float        @default(0)
+  status         SaleStatus   @default(OPEN) // OPEN, CLOSED, CANCELLED
+  cancelledAt    DateTime?
+  cancelledBy    String?
+  createdAt      DateTime     @default(now())
+  tenant         Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  branch         Branch?      @relation(fields: [branchId], references: [id], onDelete: SetNull)
+  items          SaleItem[]
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+  @@index([tenantId, userId])
+  @@index([tenantId, paymentMethod])
+}
+
+model SaleItem {
+  id         String  @id @default(cuid())
+  saleId     String
+  productId  String
+  name       String // snapshot do nome no momento da venda
+  quantity   Float
+  unitPrice  Float // preço de venda no momento
+  costPrice  Float // preço de compra no momento (p/ lucro)
+  tenantId   String
+  sale       Sale    @relation(fields: [saleId], references: [id], onDelete: Cascade)
+  product    Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([saleId])
+  @@index([tenantId])
+}
+
+// ---------------------------------------------------------------------------
+// Auditoria (append-only)
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  tenantId  String
+  userId    String?
+  action    String // ex.: AUTH_LOGIN, SALE_CREATE, PRICE_UPDATE, PERMISSION_CHANGE
+  entity    String?
+  entityId  String?
+  ip        String?
+  meta      Json? // detalhes (sem segredos)
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Unit {
+  UN
+  ML
+  L
+  G
+  KG
+  PCT
+}
+
+enum MovementType {
+  IN
+  OUT
+  ADJUST
+  TRANSFER
+}
+
+enum PaymentMethod {
+  CASH
+  CARD
+  PIX
+  TEF
+  OTHER
+}
+
+enum SaleStatus {
+  OPEN
+  CLOSED
+  CANCELLED
+}
